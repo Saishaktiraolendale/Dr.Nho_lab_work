@@ -4,4 +4,4 @@ Welcome to my GitHub!
 
 ## 🧪 Lab Lunch – Neuroimaging Genomics
 
-![Lab Lunch](https://raw.githubusercontent.com/Saishaktiraolendale/Saishaktiraolendale/main/lab_lunch.png)
+![Lab Lunch](https://github.com/Saishaktiraolendale/Dr.Nho_lab_work/blob/main/DR.Nho_lab.png)
