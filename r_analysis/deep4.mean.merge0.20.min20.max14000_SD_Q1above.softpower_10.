@@ -1,0 +1,233 @@
+# ----------------------------------
+# Load Required Libraries
+# ----------------------------------
+library(WGCNA)
+library(tidyverse)
+
+options(stringsAsFactors = FALSE)
+allowWGCNAThreads()
+cat("✅ Libraries loaded.\n")
+
+# ----------------------------------
+# Load and Filter Data
+# ----------------------------------
+cat("📂 Loading data...\n")
+rna_df <- read.csv("cqn_tbl_total_fixed.csv")
+meta <- read.csv("Merged_KBASE_Demographic_BrainAge.csv")
+
+# Filter expression: protein_coding, exclude chrM/X/Y
+rna_df <- rna_df %>%
+  filter(!Chr %in% c("chrM", "chrX", "chrY"), gene_type == "protein_coding")
+
+rna_sample_columns <- colnames(rna_df)[7:ncol(rna_df)]
+
+# Filter metadata
+meta_filtered <- meta %>%
+  filter(Visit.Label == 0, DX != 1) %>%
+  mutate(
+    Delta_Age = Brain_Age - Age,
+    Barcode_str = make.names(as.character(Barcode))
+  ) %>%
+  drop_na(Delta_Age, Age, Sex, RIN.Value, Batch)
+
+valid_barcodes <- meta_filtered$Barcode_str[meta_filtered$Barcode_str %in% rna_sample_columns]
+
+meta_final <- meta_filtered %>%
+  filter(Barcode_str %in% valid_barcodes) %>%
+  arrange(factor(Barcode_str, levels = valid_barcodes))
+
+# ----------------------------------
+# Residualize Expression
+# ----------------------------------
+expr_raw <- rna_df %>%
+  select(Geneid, all_of(valid_barcodes)) %>%
+  column_to_rownames("Geneid") %>%
+  mutate(across(everything(), as.numeric)) %>%
+  t() %>%
+  as.data.frame()
+
+expr_raw$SampleID <- rownames(expr_raw)
+
+# Merge
+expr_merged <- left_join(meta_final, expr_raw, by = c("Barcode_str" = "SampleID"))
+genes <- colnames(expr_raw)[-ncol(expr_raw)]
+
+residual_mat <- matrix(NA, nrow = nrow(expr_merged), ncol = length(genes))
+colnames(residual_mat) <- genes
+rownames(residual_mat) <- expr_merged$Barcode_str
+
+for (i in seq_along(genes)) {
+  gene <- genes[i]
+  model <- lm(expr_merged[[gene]] ~ expr_merged$Batch + expr_merged$RIN.Value, na.action = na.exclude)
+  residual_mat[, gene] <- residuals(model)
+}
+
+# ----------------------------------
+# SD Filter (Above Q1)
+# ----------------------------------
+gene_sd <- apply(residual_mat, 2, sd, na.rm = TRUE)
+q1 <- quantile(gene_sd, 0.25)
+sd_filtered <- residual_mat[, gene_sd > q1]
+
+cat("✅ Residualized and SD-filtered expression:", dim(sd_filtered), "\n")
+cat("🧬 Genes retained after SD filter:", ncol(sd_filtered), "\n")
+
+# ----------------------------------
+# Build Expression Matrix
+# ----------------------------------
+datExpr <- as.matrix(sd_filtered)
+
+# ----------------------------------
+# Good Genes/Samples Check
+# ----------------------------------
+gsg <- goodSamplesGenes(datExpr, verbose = 3)
+if (!gsg$allOK) {
+  datExpr <- datExpr[gsg$goodSamples, gsg$goodGenes]
+  meta_final <- meta_final[gsg$goodSamples, ]
+}
+
+# Trait Data
+datTraits <- meta_final %>%
+  select(Delta_Age, Sex, RIN.Value, Batch) %>%
+  mutate(Sex = as.factor(Sex), Batch = as.factor(Batch))
+rownames(datTraits) <- meta_final$Barcode_str
+
+# ----------------------------------
+# Soft Thresholding & Plot
+# ----------------------------------
+powers <- c(1:10, seq(12, 20, 2), seq(22, 50, 2))
+sft <- pickSoftThreshold(
+  datExpr,
+  powerVector = powers,
+  networkType = "signed",
+  corFnc = "bicor",
+  verbose = 5
+)
+
+# Plot diagnostic soft power graphs
+par(mfrow = c(1, 2))
+cex1 <- 0.9
+
+# Scale Independence
+plot(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     xlab = "Soft Threshold (power)", ylab = "Scale Free Topology Model Fit, signed R²",
+     type = "n", main = "Scale Independence")
+text(sft$fitIndices[, 1], -sign(sft$fitIndices[, 3]) * sft$fitIndices[, 2],
+     labels = powers, cex = cex1, col = "black")
+abline(h = 0.8, col = "red", lty = 2)
+
+# Mean Connectivity
+plot(sft$fitIndices[, 1], sft$fitIndices[, 5],
+     xlab = "Soft Threshold (power)", ylab = "Mean Connectivity",
+     type = "n", main = "Mean Connectivity")
+text(sft$fitIndices[, 1], sft$fitIndices[, 5],
+     labels = powers, cex = cex1, col = "black")
+
+soft_power <- 10
+cat("🧪 Using soft power =", soft_power, "\n")
+
+# ----------------------------------
+# Network Construction
+# ----------------------------------
+bwnet <- blockwiseModules(
+  datExpr,
+  power = soft_power,
+  corType = "bicor",
+  TOMDenom = "mean",
+  networkType = "signed",
+  deepSplit = 4,
+  reassignThreshold = 0.05,
+  mergeCutHeight = 0.20,
+  numericLabels = TRUE,
+  minModuleSize = 20,
+  maxBlockSize = 14000,
+  verbose = 3
+)
+
+# ----------------------------------
+# Plot Dendrogram
+# ----------------------------------
+mergedColors <- labels2colors(bwnet$colors)
+
+plotDendroAndColors(
+  dendro = bwnet$dendrograms[[1]],
+  colors = mergedColors[bwnet$blockGenes[[1]]],
+  groupLabels = "Module colors",
+  dendroLabels = FALSE,
+  hang = 0.03,
+  addGuide = TRUE,
+  guideHang = 0.0
+)
+cat("🧩 Module count:", length(unique(mergedColors)), "\n")
+
+# ----------------------------------
+# Module-Trait Relationships
+# ----------------------------------
+MEs <- bwnet$MEs
+moduleTraitCor <- cor(MEs, datTraits, use = "p")
+moduleTraitPvalue <- corPvalueStudent(moduleTraitCor, nrow(datExpr))
+
+labeledHeatmap(
+  Matrix = moduleTraitCor,
+  xLabels = names(datTraits),
+  yLabels = names(MEs),
+  ySymbols = names(MEs),
+  colorLabels = FALSE,
+  colors = blueWhiteRed(50),
+  textMatrix = signif(moduleTraitPvalue, 2),
+  main = "Module-trait relationships"
+)
+
+# ----------------------------------
+# Linear Models on Eigengenes (NO Age)
+# ----------------------------------
+cat("📊 Running linear models (without Age)...\n")
+
+lm_results <- map_dfr(names(MEs), function(module_name) {
+  eigengene <- MEs[[module_name]]
+  df <- meta_final %>%
+    mutate(
+      Eigengene = eigengene,
+      Sex = as.factor(Sex),
+      Batch = as.factor(Batch)
+    )
+  
+  model <- tryCatch({
+    lm(Eigengene ~ Delta_Age + Sex + Age, data = df)
+  }, error = function(e) {
+    message("❌ Model failed for ", module_name, ": ", e$message)
+    return(NULL)
+  })
+  
+  if (is.null(model)) return(NULL)
+  coef_table <- summary(model)$coefficients
+  if (!"Delta_Age" %in% rownames(coef_table)) return(NULL)
+  
+  tibble(
+    Module = module_name,
+    Beta = coef_table["Delta_Age", "Estimate"],
+    SE = coef_table["Delta_Age", "Std. Error"],
+    t = coef_table["Delta_Age", "t value"],
+    P.Value = coef_table["Delta_Age", "Pr(>|t|)"]
+  )
+})
+
+# ----------------------------------
+# Adjust and Save Results (Exclude ME0)
+# ----------------------------------
+lm_results <- lm_results %>%
+  filter(Module != "ME0") %>%
+  mutate(p.fdr = p.adjust(P.Value, method = "BH"))
+
+write.csv(lm_results, "WGCNA_deep4.merge0.20_SD_Q1above_soft10.csv", row.names = FALSE)
+cat("✅ DONE: Results saved to WGCNA_deep4.merge0.20_SD_Q1above_soft10.csv\n")
+print(head(lm_results %>% arrange(p.fdr)))
+
+
+
+
+
+
+
+
+
