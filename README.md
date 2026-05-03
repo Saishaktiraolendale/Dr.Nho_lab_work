@@ -194,7 +194,7 @@ A good soft-power choice balances:
 - Acceptable mean connectivity
 - Stable and biologically meaningful network construction
 
-![Soft Power Selection](images/deep4.mean.merge0.20.min20.max14000_SD_Q1above.softpower_10.png)
+![Soft Power Selection](images/deep4.mean.merge0.20.min20.max14000_SD_Q1above.softpower_10..png)
 
 ---
 
