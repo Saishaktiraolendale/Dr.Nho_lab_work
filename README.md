@@ -156,7 +156,7 @@ This volcano plot shows gene expression association with Delta Age at Visit 4.
 
 👉 Code: [`r_analysis/lm_model_withoutApoe_&_without_NC_Young_visitable_4.R`](r_analysis/lm_model_withoutApoe_&_without_NC_Young_visitable_4.R)
 
-![Visit 4 Volcano Plot](images/lm_model_withoutApoe_&_without_NC_Young_visitable_4.png)
+![Visit 4 Volcano Plot](images/lm_model_withoutApoe_&_without_NC_Young_visitlable_4.png)
 
 ---
 
